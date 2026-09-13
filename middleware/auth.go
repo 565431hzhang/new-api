@@ -97,18 +97,27 @@ func TryUserAuth() func(c *gin.Context) {
 	}
 }
 
+// UserAuth 返回普通用户鉴权中间件。
+// 要求请求者至少为普通用户角色（RoleCommonUser）。
+// 用于用户自身数据的管理端点（如查看自己的 Token、日志等）。
 func UserAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		authHelper(c, common.RoleCommonUser)
 	}
 }
 
+// AdminAuth 返回管理员鉴权中间件。
+// 要求请求者至少为管理员角色（RoleAdminUser）。
+// 用于管理员才能访问的端点（如查看所有用户、管理兑换码等）。
 func AdminAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		authHelper(c, common.RoleAdminUser)
 	}
 }
 
+// RootAuth 返回超级管理员鉴权中间件。
+// 要求请求者为超级管理员角色（RoleRootUser）。
+// 用于最高权限端点（如系统配置、自定义 OAuth、性能监控等）。
 func RootAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		authHelper(c, common.RoleRootUser)
@@ -358,6 +367,16 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 	}
 }
 
+// TokenAuth 返回 API Token 鉴权中间件。
+//
+// 这是 relay 路由的核心鉴权中间件，支持多种 API 格式的鉴权方式：
+//   - OpenAI 格式：Authorization: Bearer sk-xxx
+//   - Claude 格式：x-api-key: sk-xxx（用于 /v1/messages 端点）
+//   - Gemini 格式：query参数 ?key=xxx 或 x-goog-api-key 头
+//   - WebSocket Realtime：从 Sec-WebSocket-Protocol 头中提取密钥
+//   - Midjourney 格式：mj-api-secret 头
+//
+// 鉴权后从 Token 中解析出用户 ID、分组、模型限制等，写入 gin.Context。
 func TokenAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		// 先检测是否为ws

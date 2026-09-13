@@ -20,6 +20,28 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// Channel 表示一个上游 AI 服务渠道（如一个 OpenAI API Key 对应的连接配置）。
+//
+// Channel 是 new-api 的核心概念：每个渠道代表一个上游 AI 服务的连接配置，
+// 包含 API Key、Base URL、支持的模型列表、分组、权重等信息。
+// 系统通过渠道能力表（Ability）实现"模型→可用渠道"的映射，
+// 在请求到达时，Distribute 中间件根据模型名和用户分组选择合适的渠道。
+//
+// 关键字段：
+//   - Type: 渠道类型（OpenAI/Claude/Gemini/百度/阿里等），决定使用哪个 Adaptor
+//   - Key: 上游 API Key（支持多 Key 轮询，存储在 ChannelInfo.IsMultiKey）
+//   - BaseURL: 上游 API 地址（可覆盖默认地址，如自建 OpenAI 代理）
+//   - Models: 该渠道支持的模型列表（逗号分隔）
+//   - Group: 渠道所属分组（用于用户分组权限控制）
+//   - Weight: 权重（同分组多渠道时的随机选择概率）
+//   - Priority: 优先级（高优先级渠道优先被选择）
+//   - Status: 状态（1=启用, 2=手动禁用, 3=自动禁用）
+//   - AutoBan: 是否在出错时自动禁用渠道
+//   - ModelMapping: 模型名映射（客户端请求的模型名→上游实际模型名）
+//   - StatusCodeMapping: HTTP 状态码映射（上游状态码→客户端状态码）
+//   - Setting: 渠道额外设置（JSON，如自定义请求头等）
+//   - ParamOverride: 请求参数覆盖（JSON，可强制修改请求参数）
+//   - Other: 渠道特定参数（如 Azure 的 API 版本、Vertex AI 的区域）
 type Channel struct {
 	Id                 int     `json:"id"`
 	Type               int     `json:"type" gorm:"default:0"`

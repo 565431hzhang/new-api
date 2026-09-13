@@ -22,6 +22,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// TextHelper 处理 OpenAI Chat Completions 格式的文本请求（最常用的 relay 路径）。
+//
+// 这是所有聊天补全请求的核心处理函数，流程：
+//  1. 初始化渠道元数据（InitChannelMeta）——从 gin.Context 读取渠道配置
+//  2. 解析请求体为 GeneralOpenAIRequest
+//  3. 应用模型映射（如果渠道配置了模型名映射）
+//  4. 获取适配器（GetAdaptor）——根据渠道类型选择对应的厂商适配器
+//  5. 转换请求格式（ConvertOpenAIRequest）——将统一格式转为厂商专有格式
+//  6. 构建请求 URL 和 Headers（GetRequestURL + SetupRequestHeader）
+//  7. 发送请求到上游（DoRequest）
+//  8. 处理响应（DoResponse）——解析响应、写入客户端、计算用量
+//  9. 结算计费（PostConsumeQuota）——根据实际用量扣除配额
 func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
 

@@ -1,3 +1,20 @@
+// Package common 是 new-api 的公共工具包，提供全局共享的配置、常量和工具函数。
+//
+// 主要内容：
+//   - 环境变量解析与全局配置（InitEnv, env.go）
+//   - 全局常量定义（版本号、角色等级、渠道状态等）
+//   - 日志系统（SysLog, SysError, FatalLog）
+//   - Redis 客户端管理（redis.go）
+//   - 内存缓存与磁盘缓存（disk_cache.go）
+//   - 通用工具函数（字符串处理、JSON、哈希、加密等）
+//   - 配额计算工具（quota.go, quota_math.go）
+//   - 请求体存储（BodyStorage，支持请求重放/重试）
+//   - 速率限制（rate-limit.go）
+//   - SSRF 防护（ssrf_protection.go）
+//   - TOTP 双因素认证（totp.go）
+//   - 邮件发送（email.go）
+//   - 系统监控（system_monitor.go）
+//   - 性能分析（pprof.go, pyro.go）
 package common
 
 import (
@@ -29,6 +46,20 @@ func printHelp() {
 	fmt.Println("Usage: newapi [--port <port>] [--log-dir <log directory>] [--version] [--help]")
 }
 
+// InitEnv 解析命令行参数和环境变量，初始化全局配置。
+//
+// 读取的环境变量包括：
+//   - VERSION: 版本号覆盖
+//   - PORT / GIN_MODE: 服务端口和 Gin 模式
+//   - DEBUG: 调试模式
+//   - LOG_DIR: 日志目录
+//   - 各种功能开关和数据库连接配置（见 env.go）
+//
+// 命令行参数：
+//   - --port: 监听端口（默认 3000）
+//   - --version: 打印版本并退出
+//   - --help: 打印帮助并退出
+//   - --log-dir: 日志目录（默认 ./logs）
 func InitEnv() {
 	flag.Parse()
 

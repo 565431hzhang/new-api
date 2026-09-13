@@ -35,6 +35,15 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// relayHandler 根据请求模式分发到对应的 relay helper 函数。
+// 这是所有同步 relay 请求的核心分发逻辑，按 RelayMode 分类处理：
+//   - 图像生成/编辑 → ImageHelper
+//   - 音频（合成/翻译/转写）→ AudioHelper
+//   - 重排序 → RerankHelper
+//   - 嵌入向量 → EmbeddingHelper
+//   - Responses API → ResponsesHelper
+//   - Alpha 搜索（Codex 独立搜索）→ AlphaSearchHelper
+//   - 默认（聊天补全等）→ TextHelper
 func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
 	switch info.RelayMode {
@@ -60,6 +69,8 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 	return err
 }
 
+// geminiRelayHandler 处理 Gemini 格式的 relay 请求。
+// 根据请求路径区分嵌入和聊天：路径包含 "embed" 则走嵌入流程，否则走 Gemini 聊天。
 func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
 	if strings.Contains(c.Request.URL.Path, "embed") {
@@ -70,6 +81,27 @@ func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewA
 	return err
 }
 
+// Relay 是所有同步 AI 请求的统一入口函数。
+//
+// 完整请求流程：
+//  1. 解析和验证请求（GetAndValidateRequest），支持 OpenAI/Claude/Gemini/Realtime 多种格式
+//  2. 生成 RelayInfo（包含用户、渠道、模型映射等上下文信息）
+//  3. 敏感词检查（可选）
+//  4. 估算请求 token 数（用于预扣费）
+//  5. 计算模型价格（ModelPriceHelper）
+//  6. 预扣费（PreConsumeBilling）—— 免费模型跳过
+//  7. 渠道选择 + 重试循环：
+//     a. 从缓存中随机选一个满足条件的渠道（getChannel）
+//     b. 准备分层计费（PrepareTieredBillingForSelectedGroup）
+//     c. 根据格式调用对应的 helper（OpenAI/Claude/Gemini/Realtime）
+//     d. 成功则返回；失败则判断是否应重试，换渠道再来
+//  8. 失败时退还预扣费（Billing.Refund），并记录错误日志
+//
+// 支持的请求格式由 relayFormat 参数决定：
+//   - RelayFormatOpenAI / RelayFormatOpenAIResponses / RelayFormatOpenAIImage 等
+//   - RelayFormatClaude — Anthropic Messages 格式
+//   - RelayFormatGemini — Google Gemini 格式
+//   - RelayFormatOpenAIRealtime — WebSocket 实时音频
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	requestId := c.GetString(common.RequestIdKey)
@@ -296,12 +328,19 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// addUsedChannel 记录本次请求使用过的渠道 ID 到 gin.Context，
+// 用于生成重试日志（如"重试：1->5->3"）和后续分析。
 func addUsedChannel(c *gin.Context, channelId int) {
 	useChannel := c.GetStringSlice("use_channel")
 	useChannel = append(useChannel, fmt.Sprintf("%d", channelId))
 	c.Set("use_channel", useChannel)
 }
 
+// fastTokenCountMetaForPricing 在不需要完整 token 计数和敏感词检查时，
+// 只提取影响定价的关键信息（MaxTokens），避免构建巨大的 CombineText 字符串。
+// 这是一条快速路径，用于跳过昂贵的 tokenizer 调用。
+//
+// 特殊情况：图像请求的定价依赖 ImagePriceRatio，必须走完整路径。
 func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 	if request == nil {
 		return &types.TokenCountMeta{}
@@ -331,6 +370,16 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 	return meta
 }
 
+// getChannel 从渠道缓存中选择一个满足条件的可用渠道。
+//
+// 渠道选择策略：
+//   - 如果 RelayInfo.ChannelMeta 已存在（声明式路由预绑定的渠道），
+//     直接使用 context 中的渠道信息，跳过缓存查询。
+//   - 否则调用 CacheGetRandomSatisfiedChannel，在用户分组下随机选择
+//     一个支持当前模型且状态正常的渠道。
+//
+// 选中后调用 SetupContextForSelectedChannel 将渠道信息写入 gin.Context，
+// 供后续 middleware（鉴权、计费等）使用。
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
 	if info.ChannelMeta == nil {
 		autoBan := c.GetBool("auto_ban")
@@ -362,6 +411,20 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
+// shouldRetry 判断当前请求失败后是否应该换渠道重试。
+//
+// 重试决策逻辑（任一条件满足则不重试）：
+//   - 错误为 nil（无错误）
+//   - 渠道亲和性失败后应跳过重试
+//   - 错误标记为不可重试（SkipRetryError）
+//   - 已无重试次数（retryTimes <= 0）
+//   - 渠道约束配置了抑制重试
+//   - HTTP 状态码在 2xx 范围内（成功）
+//
+// 重试条件（满足任一则重试）：
+//   - 渠道级错误（IsChannelError）
+//   - 状态码超出正常范围（<100 或 >599）
+//   - 状态码匹配 operation_setting 中配置的可重试状态码
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	if openaiErr == nil {
 		return false
@@ -394,6 +457,17 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	return operation_setting.ShouldRetryByStatusCode(code)
 }
 
+// processChannelError 处理渠道级别的错误响应。
+//
+// 在请求失败后执行三件事：
+//  1. 记录错误日志（包含渠道 ID、状态码、错误信息）
+//  2. 如果错误类型属于应禁用渠道的类型，且渠道开启了自动禁用（AutoBan），
+//     则异步禁用该渠道，避免后续请求继续打到故障渠道
+//  3. 如果启用了错误日志记录（ErrorLogEnabled），将详细错误信息持久化到数据库，
+//     包含用户 ID、Token 信息、模型名、错误类型/代码/状态码、耗时等
+//
+// 注意：渠道信息直接从参数获取而非 context，因为异步处理时
+// context 中的渠道信息可能与实际发生错误的渠道不一致。
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
@@ -430,6 +504,9 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 
 }
 
+// RelayMidjourney 处理 Midjourney 相关的所有请求（提交/查询/换脸等）。
+// 根据 RelayMode 分发到具体的 relay 函数。
+// 429 错误（码 30）特殊处理为"分组负载饱和"提示。
 func RelayMidjourney(c *gin.Context) {
 	relayInfo, err := relaycommon.GenRelayInfo(c, types.RelayFormatMjProxy, nil, nil)
 
@@ -502,9 +579,10 @@ func RelayNotFound(c *gin.Context) {
 	})
 }
 
-// RelayTaskPluginEndpoint keeps unclaimed shared-endpoint traffic on its
-// existing handler while claimed requests enter the generation-pinned
-// host-owned protocol bridge.
+// RelayTaskPluginEndpoint 处理共享端点上的任务插件协议请求。
+// 如果请求已被声明式路由绑定到特定插件（PinnedEndpoint），走插件协议桥接；
+// 否则回退到 fallback handler 处理。
+// 仅支持 openai_responses 协议的绑定请求走桥接路径。
 func RelayTaskPluginEndpoint(c *gin.Context, fallback gin.HandlerFunc) {
 	pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint)
 	if !exists {
@@ -529,6 +607,8 @@ func RelayTaskPluginEndpoint(c *gin.Context, fallback gin.HandlerFunc) {
 	serveTaskPluginProtocol(c, pinned, defaultPluginProtocolBridgeDeps())
 }
 
+// RelayTaskFetch 处理异步任务状态查询请求。
+// 客户端通过此端点轮询已提交任务的完成状态和结果。
 func RelayTaskFetch(c *gin.Context) {
 	relayInfo, err := relaycommon.GenRelayInfo(c, types.RelayFormatTask, nil, nil)
 	if err != nil {
@@ -550,6 +630,17 @@ type taskSubmissionOutcome struct {
 	RelayInfo *relaycommon.RelayInfo
 }
 
+// RelayTask 处理异步任务提交请求（如 Midjourney、Suno、视频生成等）。
+//
+// 与同步 Relay 不同，任务提交后不立即返回结果，而是创建一个 Task 记录，
+// 后台轮询上游状态直到完成。
+//
+// 流程：
+//  1. 生成 RelayInfo
+//  2. 解析任务动作（imagine/variation/upscale 等）
+//  3. 解析源任务亲和性（如基于已有任务的操作）
+//  4. 执行任务提交（executeTaskSubmission）—— 包含重试、计费、持久化
+//  5. 向客户端呈现提交结果（presentTaskSubmission）
 func RelayTask(c *gin.Context) {
 	relayInfo, err := relaycommon.GenRelayInfo(c, types.RelayFormatTask, nil, nil)
 	if err != nil {
@@ -592,6 +683,22 @@ func executeTaskSubmission(c *gin.Context, relayInfo *relaycommon.RelayInfo) (*t
 
 type taskSubmitAttempt func(*gin.Context, *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *taskdto.TaskError)
 
+// executeTaskSubmissionWith 执行任务提交的完整生命周期：
+// 重试循环 → 渠道选择 → 请求构建 → 上游提交 → 计费预扣 → 任务持久化 → 费用结算。
+//
+// 持久化保证：任务成功写入数据库（InsertWithContext 成功）后，
+// 即使后续步骤失败也会退还预扣费，但不会回滚任务记录。
+//
+// 取消语义：通过 c.Request.Context() 实现。原生任务端点使用客户端上下文，
+// Responses bridge 提供独立的有界上下文。
+//
+// 计费流程：
+//  1. 提交前：预扣费（基于 EstimateBilling 的预估）
+//  2. 提交后：根据上游实际参数调整（Reserve），若配额不足则回退
+//  3. 持久化后：结算（Settle），结算最终配额
+//
+// durable 标志位标记任务是否已成功持久化，
+// 在 defer 中检查：未持久化时退还预扣费。
 func executeTaskSubmissionWith(
 	c *gin.Context,
 	relayInfo *relaycommon.RelayInfo,
@@ -792,6 +899,14 @@ func executeTaskSubmissionWith(
 	return &taskSubmissionOutcome{Result: result, Task: task, RelayInfo: relayInfo}, nil
 }
 
+// presentTaskSubmission 将任务提交结果呈现给客户端。
+//
+// 呈现方式按优先级：
+//  1. 如果有声明式路由绑定的 native 渲染器，调用插件的 native 函数渲染响应
+//  2. 如果是 OpenAI Video 协议端点，转换为 OpenAI Video 格式
+//  3. 默认回退：返回标准任务提交响应（task_id + queued 状态）
+//
+// 同时在响应头中返回 OtherRatios 信息（X-New-Api-Other-Ratios）。
 func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 	diagnostics := newTaskPluginSubmitDiagnostics(c)
 	otherRatios := outcome.RelayInfo.PriceData.OtherRatios()
@@ -861,6 +976,15 @@ func respondTaskError(c *gin.Context, taskErr *taskdto.TaskError) {
 	c.JSON(taskErr.StatusCode, taskErr)
 }
 
+// shouldRetryTaskRelay 判断异步任务提交失败后是否应换渠道重试。
+//
+// 与 shouldRetry 类似，但针对任务场景做了特殊处理：
+//   - 429（限流）和 307（临时重定向）总是重试
+//   - 5xx 服务端错误重试（但可配置某些状态码不重试）
+//   - 400（参数错误）不重试——说明是客户端问题
+//   - 408（超时，Azure 特有）不重试
+//   - 本地错误（LocalError）不重试——非上游问题
+//   - 2xx 不重试——属于异常的成功响应
 func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskError, retryTimes int) bool {
 	if taskErr == nil || taskErr.NoRetry {
 		return false

@@ -420,6 +420,20 @@ type postConsumeQuotaResult struct {
 	TokenApplied   bool
 }
 
+// PostConsumeQuota 在请求完成后执行配额结算（后扣费）。
+//
+// 参数：
+//   - relayInfo: 请求上下文（包含用户 ID、Token ID、计费来源等）
+//   - quota: 实际消耗的配额（正值=扣除，负值=退还）
+//   - preConsumedQuota: 预扣的配额（用于差额计算）
+//   - sendEmail: 是否在配额不足时发送邮件通知用户
+//
+// 计费来源决定扣费方式：
+//   - 订阅（Subscription）：从订阅配额中扣除
+//   - 钱包（Wallet）：从用户余额配额中扣除
+//
+// 同时更新 Token 的配额使用量，并记录日志。
+// 如果实际消耗 < 预扣，退还差额；反之补扣差额。
 func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) error {
 	_, err := postConsumeQuotaWithResult(relayInfo, quota, preConsumedQuota, sendEmail)
 	return err

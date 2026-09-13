@@ -12,6 +12,44 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SetApiRouter 设置所有管理 API 路由（非 relay 转发路由）。
+//
+// 这些路由用于 new-api 后台管理、用户系统、计费、配置等，
+// 与 SetRelayRouter（AI 模型转发）分开。所有路由前缀为 /api。
+//
+// 路由分组：
+//   - 公开端点 — /api/setup, /api/status, /api/notice 等（无需鉴权）
+//   - /api/user/* — 用户管理：注册/登录/2FA/Passkey/会话/充值/OAuth 绑定
+//   - /api/user/admin/* — 管理员用户管理
+//   - /api/subscription/* — 订阅计费：计划、购买、管理
+//   - /api/option/* — 系统配置（Root 权限）
+//   - /api/custom-oauth-provider/* — 自定义 OAuth 提供商管理（Root 权限）
+//   - /api/performance/* — 性能监控（Root 权限）
+//   - /api/ratio_sync/* — 倍率同步（Root 权限）
+//   - /api/plugin/task/* — 任务插件管理（Root 权限）
+//   - /api/channel/* — 渠道管理（见 registerChannelRoutes）
+//   - /api/token/* — API Token 管理（用户权限）
+//   - /api/usage/* — 用量查询（Token 只读）
+//   - /api/redemption/* — 兑换码管理（管理员）
+//   - /api/audit/* — 审计日志
+//   - /api/log/* — 请求日志
+//   - /api/system-task/* — 系统定时任务（Root 权限）
+//   - /api/system-info/* — 系统实例信息（Root 权限）
+//   - /api/data/* — 数据看板
+//   - /api/group/* — 分组管理
+//   - /api/prefill_group/* — 预填充分组
+//   - /api/mj/* — Midjourney 任务管理
+//   - /api/task/* — 异步任务管理
+//   - /api/vendors/* — 厂商元数据管理
+//   - /api/models/* — 模型元数据管理
+//   - /api/deployments/* — 模型部署管理
+//
+// 中间件链（全局）：
+//   - RouteTag("api") — 标记为 API 路由
+//   - Gzip — 响应压缩
+//   - AccessTokenAudit — Access Token 审计
+//   - BodyStorageCleanup — 请求体存储清理
+//   - GlobalAPIRateLimit — 全局 API 限流
 func SetApiRouter(router *gin.Engine) {
 	apiRouter := router.Group("/api")
 	apiRouter.Use(middleware.RouteTag("api"))

@@ -10,6 +10,42 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SetRelayRouter 设置所有 AI 模型 relay（转发）路由。
+//
+// 这是 new-api 的核心路由，对外暴露 OpenAI / Claude / Gemini 兼容的 API 端点，
+// 客户端像调用原生 API 一样调用这些端点，new-api 内部将请求转发到配置的上游渠道。
+//
+// 路由结构：
+//   - /v1/models — 模型列表（根据请求头自动识别 OpenAI/Claude/Gemini 格式）
+//   - /v1beta/models — Gemini 原生格式模型列表
+//   - /v1beta/openai/models — Gemini 兼容 OpenAI 格式
+//   - /pg/chat/completions — Playground（需用户登录，不走 Token 鉴权）
+//   - /v1/* — OpenAI 兼容端点：
+//     - /v1/realtime — WebSocket 实时音频
+//     - /v1/messages — Claude Messages 格式
+//     - /v1/chat/completions — OpenAI Chat 格式
+//     - /v1/responses/compact — Responses API 压缩格式
+//     - /v1/alpha/search — Codex 独立搜索
+//     - /v1/images/* — 图像生成/编辑
+//     - /v1/embeddings — 嵌入向量
+//     - /v1/audio/* — 音频转写/翻译/合成
+//     - /v1/rerank — 重排序
+//     - /v1/models/* — Gemini 格式 relay
+//     - /v1/moderations — 内容审核
+//   - /mj/* — Midjourney 任务端点
+//   - /:mode/mj/* — 带模式的 Midjourney 端点（兼容不同 MJ API 版本）
+//   - /v1beta/models/* — Gemini 原生格式 relay
+//
+// 中间件链：
+//   - CORS — 跨域
+//   - DecompressRequestMiddleware — 请求解压
+//   - BodyStorageCleanup — 请求体存储清理
+//   - StatsMiddleware — 请求统计
+//   - RouteTag("relay") — 标记为 relay 路由（用于日志和审计区分）
+//   - SystemPerformanceCheck — 系统性能检查（过载保护）
+//   - TokenAuth — Token 鉴权
+//   - ModelRequestRateLimit — 模型级请求限流
+//   - Distribute — 渠道分发（选择渠道、设置上下文）
 func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.CORS())
 	router.Use(middleware.DecompressRequestMiddleware())
@@ -194,6 +230,9 @@ func SetRelayRouter(router *gin.Engine) {
 	}
 }
 
+// registerMjRouterGroup 注册 Midjourney 兼容路由。
+// /mj/image/:id 无需 Token 鉴权（公开访问已生成的图片），
+// 其余端点需要 TokenAuth + Distribute 中间件。
 func registerMjRouterGroup(relayMjRouter *gin.RouterGroup) {
 	relayMjRouter.GET("/image/:id", relay.RelayMidjourneyImage)
 	relayMjRouter.Use(middleware.TokenAuth(), middleware.Distribute())

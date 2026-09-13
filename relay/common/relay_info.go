@@ -81,6 +81,21 @@ type TokenCountMeta struct {
 	estimatePromptTokens int
 }
 
+// RelayInfo 是贯穿整个请求处理流程的核心上下文对象。
+//
+// 它在请求进入 Relay 时由 GenRelayInfo 创建，包含：
+//   - 用户与 Token 信息：UserId, TokenId, TokenGroup, UserGroup 等
+//   - 请求信息：RelayMode（聊天/嵌入/图像/音频等）, OriginModelName, IsStream
+//   - 渠道信息：ChannelMeta（渠道类型、API Key、上游模型名等）
+//   - 计费信息：PriceData, Billing（预扣费/退款/结算）
+//   - 重试状态：RetryIndex, LastError
+//   - 响应状态：StartTime, FirstResponseTime（用于计算首字延迟）
+//   - 流式控制：isFirstResponse, ReasoningEffort 等
+//   - WebSocket 连接：ClientWs, TargetWs（实时音频模式）
+//
+// UsingGroup 与 UserGroup 的区别：
+//   - UserGroup 是用户所属的固定分组
+//   - UsingGroup 是当前实际使用的分组（跨分组自动重试时会变动）
 type RelayInfo struct {
 	TokenId           int
 	TokenKey          string

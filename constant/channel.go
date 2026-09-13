@@ -1,5 +1,19 @@
+// Package constant 定义 new-api 的全局常量。
+//
+// 包括：
+//   - ChannelType*: 渠道类型常量（每个数值对应一个 AI 厂商或服务类型）
+//   - APIType*: API 类型常量（用于选择适配器，与渠道类型一一或多对一映射）
+//   - ContextKey*: gin.Context 上下文键名常量
+//   - CacheKey*: 缓存键名常量
+//   - 用户角色、渠道状态、日志类型等枚举值
 package constant
 
+// 渠道类型常量。每个值对应一种上游 AI 服务。
+// 渠道类型决定了使用哪个 Adaptor（适配器）来处理请求格式转换。
+// 新增渠道类型时需要同步更新：
+//   1. 此处的常量定义
+//   2. api_type.go 中的 ChannelType2APIType 映射
+//   3. relay/relay_adaptor.go 的 GetAdaptor switch（通过 APIType）
 const (
 	ChannelTypeUnknown        = 0
 	ChannelTypeOpenAI         = 1

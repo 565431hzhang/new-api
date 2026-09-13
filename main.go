@@ -1,3 +1,24 @@
+// new-api 是一个 AI 模型聚合分发网关。
+//
+// 它将不同 AI 厂商的 API（OpenAI、Claude、Gemini、百度、阿里等）统一为
+// OpenAI / Claude / Gemini 兼容格式，客户端只需对接一个端点即可访问所有模型。
+//
+// 核心架构：
+//   - relay/  — 渠道适配器层（Adaptor 模式），每个厂商一个适配器实现，
+//     负责请求格式转换、签名鉴权、响应解析
+//   - controller/ — HTTP 请求处理器，编排 relay 流程（重试、计费、渠道选择）
+//   - router/ — 路由注册，分为 API 管理路由和 relay 转发路由
+//   - middleware/ — Gin 中间件（鉴权、限流、缓存、分发等）
+//   - model/ — 数据库模型层（GORM），管理渠道、用户、Token、日志、任务等
+//   - service/ — 业务逻辑层（计费、渠道选择、HTTP 客户端、任务轮询等）
+//   - common/ — 公共工具（配置、日志、Redis、缓存等）
+//
+// 请求处理主流程：
+//   请求 → TokenAuth → Distribute（选渠道）→ Relay → 预扣费 →
+//   选适配器 → 转换格式 → 发往上游 → 解析响应 → 结算费用 → 返回客户端
+//
+// 编译：go build（前端通过 web/dist 嵌入二进制）
+// 运行：默认监听端口 3000（可通过 PORT 环境变量修改）
 package main
 
 import (
@@ -40,12 +61,25 @@ import (
 	_ "net/http/pprof"
 )
 
+// buildFS 嵌入前端构建产物（web/dist），编译时打包进二进制。
 //go:embed web/dist
 var buildFS embed.FS
 
+// indexPage 嵌入前端入口 HTML，运行时用于注入分析脚本后返回给浏览器。
 //go:embed web/dist/index.html
 var indexPage []byte
 
+// main 是 new-api 的入口函数。
+//
+// 启动流程：
+//   1. 如果命令行参数为 "plugin"，以 CLI 模式运行 JS 插件
+//   2. 初始化资源（InitResources）：环境变量、日志、数据库、Redis、i18n 等
+//   3. 如果启用内存缓存，初始化渠道缓存并启动定时同步
+//   4. 启动后台任务：热更新配置、任务插件同步、授权策略同步、数据看板、
+//      Codex 凭证刷新、订阅配额重置、系统实例上报、系统定时任务运行
+//   5. 配置 Gin 服务器：可信代理、Panic 恢复、请求 ID、i18n、日志
+//   6. 注册路由（router.SetRouter）
+//   7. 启动 HTTP 服务，监听信号优雅关闭
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "plugin" {
 		os.Exit(jsplugin.RunCLI(os.Args[2:], os.Stdout, os.Stderr))
@@ -243,6 +277,8 @@ func main() {
 	common.SysLog("server exited")
 }
 
+// InjectUmamiAnalytics 将 Umami 网站分析脚本注入到 indexPage 中。
+// 通过占位符 <!--umami--> 替换实现，仅在配置了 UMAMI_WEBSITE_ID 时生效。
 func InjectUmamiAnalytics() {
 	analyticsInjectBuilder := &strings.Builder{}
 	if os.Getenv("UMAMI_WEBSITE_ID") != "" {
@@ -263,6 +299,8 @@ func InjectUmamiAnalytics() {
 	indexPage = bytes.ReplaceAll(indexPage, placeholder, analyticsInject)
 }
 
+// InjectGoogleAnalytics 将 Google Analytics 4 (gtag.js) 脚本注入到 indexPage 中。
+// 通过占位符 <!--Google Analytics--> 替换实现，仅在配置了 GOOGLE_ANALYTICS_ID 时生效。
 func InjectGoogleAnalytics() {
 	analyticsInjectBuilder := &strings.Builder{}
 	if os.Getenv("GOOGLE_ANALYTICS_ID") != "" {
@@ -286,6 +324,26 @@ func InjectGoogleAnalytics() {
 	indexPage = bytes.ReplaceAll(indexPage, placeholder, analyticsInject)
 }
 
+// InitResources 初始化所有运行时依赖资源。
+//
+// 初始化顺序（有依赖关系，顺序不能随意调换）：
+//   1. 加载 .env 文件和环境变量
+//   2. 初始化日志系统
+//   3. 初始化倍率设置（ratio_setting）
+//   4. 初始化 HTTP 客户端（用于请求上游）
+//   5. 初始化 Token 编码器（用于 token 计数）
+//   6. 初始化数据库（主库 + 日志库，支持 MySQL/PostgreSQL/SQLite/ClickHouse）
+//   7. 初始化授权系统（Casbin RBAC）
+//   8. 初始化密码加密（可选）
+//   9. 检查系统是否已完成初始化引导
+//  10. 初始化选项表（系统配置，需在 InitDB 之后）
+//  11. 清理旧磁盘缓存文件
+//  12. 初始化 Redis（可选，用于多实例缓存和分布式锁）
+//  13. 初始化性能监控
+//  14. 启动系统监控
+//  15. 初始化 i18n 国际化
+//  16. 加载自定义 OAuth 提供商
+//  17. 启动认证产物清理任务
 func InitResources() error {
 	// Initialize resources here if needed
 	// This is a placeholder function for future resource initialization

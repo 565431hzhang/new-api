@@ -1,3 +1,25 @@
+// Package model 是 new-api 的数据持久化层，基于 GORM 实现。
+//
+// 支持的数据库：
+//   - MySQL / MariaDB（主库 + 日志库可分离）
+//   - PostgreSQL（主库 + 日志库可分离）
+//   - SQLite（轻量部署，通过 glebarez 纯 Go 驱动）
+//   - ClickHouse（仅日志库，用于大规模请求日志分析）
+//
+// 核心模型：
+//   - User — 用户（含角色、配额、2FA、OAuth 绑定等）
+//   - Token — API 密钥（含模型限制、分组、配额等）
+//   - Channel — 渠道（上游 AI 服务连接配置）
+//   - Ability — 渠道能力表（模型→渠道映射，用于渠道选择）
+//   - Log — 请求日志（计费、用量记录）
+//   - Task — 异步任务（Midjourney/Suno/视频等）
+//   - Option — 系统配置键值对
+//   - Redemption — 兑换码
+//   - Subscription — 订阅计划
+//
+// 全局变量：
+//   - DB     — 主数据库连接（GORM 实例）
+//   - LOG_DB — 日志数据库连接（可与主库分离）
 package model
 
 import (
@@ -19,13 +41,16 @@ import (
 	"gorm.io/gorm"
 )
 
-var commonGroupCol string
-var commonKeyCol string
-var commonTrueVal string
-var commonFalseVal string
+// 以下变量在不同数据库方言下保存 SQL 中的保留字列名引用方式。
+// PostgreSQL 用双引号 "group" / "key"，MySQL/SQLite 用反引号 `group` / `key`。
+// group 和 key 在 SQL 中是保留字，直接使用会导致语法错误，必须加引号/反引号。
+var commonGroupCol string // 主库 group 列的引号包裹形式
+var commonKeyCol string   // 主库 key 列的引号包裹形式
+var commonTrueVal string  // 主库布尔真值（PG: "true", MySQL: "1"）
+var commonFalseVal string // 主库布尔假值（PG: "false", MySQL: "0"）
 
-var logKeyCol string
-var logGroupCol string
+var logKeyCol string   // 日志库 key 列的引号包裹形式（日志库可与主库不同方言）
+var logGroupCol string // 日志库 group 列的引号包裹形式
 
 // jsonScanBytes 归一化 json 列的驱动返回值:不同驱动/协议模式下同一列可能
 // 以 []byte 或 string 返回,静默丢弃 string 会导致字段被清零而不报错。
@@ -63,8 +88,13 @@ func initCol() {
 	}
 }
 
+// DB 是主数据库连接（全局 GORM 实例）。
+// 所有非日志数据的读写（用户、渠道、Token、配置等）都通过此实例。
 var DB *gorm.DB
 
+// LOG_DB 是日志数据库连接（全局 GORM 实例）。
+// 独立于主库，可配置为不同的数据库（如用 ClickHouse 存储海量请求日志）。
+// 如果日志库与主库相同，LOG_DB 指向同一个连接。
 var LOG_DB *gorm.DB
 
 func createRootAccountIfNeed() error {

@@ -31,6 +31,32 @@ type ModelRequest struct {
 	Group string `json:"group,omitempty"`
 }
 
+// Distribute 是渠道分发中间件——relay 请求处理的核心环节。
+//
+// 它在 TokenAuth 之后执行，负责为当前请求选择一个合适的上游渠道：
+//
+//  1. 解析请求中的模型名（getModelRequest）——根据请求路径和格式
+//     （OpenAI/Claude/Gemini/Midjourney/Video/Audio 等）提取模型名
+//
+//  2. 检查渠道约束（ChannelConstraints）——如声明式路由预绑定的渠道、
+//     任务插件身份过滤等。如果约束已锁定渠道（ResolvedPin），
+//     直接使用该渠道，跳过选择
+//
+//  3. 检查 Token 模型限制——如果 Token 配置了可用模型白名单，
+//     验证请求的模型是否在白名单中
+//
+//  4. 渠道选择（如果需要）：
+//     a. 先查渠道亲和性缓存（GetPreferredChannelByAffinity）——
+//        尝试复用上次成功请求同一模型时使用的渠道
+//     b. 亲和性不满足时，调用 CacheGetRandomSatisfiedChannel——
+//        在用户分组下随机选择一个支持当前模型的可用渠道
+//     c. auto 分组：自动遍历用户可用的分组列表寻找可用渠道
+//
+//  5. 将选中渠道的信息写入 gin.Context（SetupContextForSelectedChannel）——
+//     包括渠道 ID、类型、API Key、Base URL、模型映射、参数覆盖等
+//
+//  6. 请求完成后（c.Next()），如果响应成功（status < 400），
+//     记录渠道亲和性，以便后续请求优先使用该渠道
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
@@ -610,6 +636,19 @@ func getTaskOriginModelName(c *gin.Context) string {
 	return ""
 }
 
+// SetupContextForSelectedChannel 将选中渠道的配置信息写入 gin.Context，
+// 供后续的 relay 适配器、计费、日志等模块使用。
+//
+// 写入的上下文键包括：
+//   - 渠道基本信息：channel_id, channel_name, channel_type
+//   - API Key（支持多 Key 轮询：GetNextEnabledKey）
+//   - Base URL、模型映射、状态码映射
+//   - 参数覆盖（ParamOverride）和请求头覆盖（HeaderOverride）
+//   - 自动禁用标志（AutoBan）
+//   - 渠道特定参数（如 Azure 的 api_version、Vertex AI 的 region 等）
+//
+// 如果请求已被声明式路由绑定到特定插件（expected_task_plugin_key），
+// 会验证选中渠道是否匹配该插件，不匹配则返回错误。
 func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) *types.NewAPIError {
 	c.Set("original_model", modelName) // for retry
 	expectedPlugin := c.GetString("expected_task_plugin_key")

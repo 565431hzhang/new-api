@@ -505,6 +505,9 @@ If your organization's policies do not permit the use of AGPLv3-licensed softwar
 
 If this project is helpful to you, welcome to give us a ⭐️ Star！
 
+
+###PRESONAL USE
+
 **[Official Documentation](https://docs.newapi.pro/en/docs)** • **[Issue Feedback](https://github.com/Calcium-Ion/new-api/issues)** • **[Latest Release](https://github.com/Calcium-Ion/new-api/releases)**
 
 <sub>Built with ❤️ by QuantumNous</sub>
